@@ -1,0 +1,50 @@
+[
+  {
+    "issue": "my outlook is not working",
+    "solution": "Check if it is the latest version or not\nPlease logout and login again\nPlease login in another system\nPlease go to customer care",
+    "created_at": "2025-11-13T06:53:38.520Z",
+    "source": "admin"
+  },
+  {
+    "issue": "in my laptop powerpoint is not working yes raise a ticket raise a ticket",
+    "solution": "Reinstall Powerpoint \nCheck prefrences\nTroubleshoot yourself\nContact Ms Office Support",
+    "created_at": "2025-11-13T07:10:11.491Z",
+    "source": "admin"
+  },
+  {
+    "issue": "Hiii In my laptop ms word is not working This does not resolve my issue yes raise a ticket yes raise a ticket",
+    "solution": "You can contact microsoft suppport team.\nContact reponsible person like Harshit Singhal.\nIf not resolved contact IT Helpdesk Admin.\nThanks and Regards\nTeam Backend",
+    "created_at": "2025-11-24T08:26:04.128Z",
+    "source": "admin"
+  },
+  {
+    "issue": "yes Dummy  outlook not working in my laptop submit the ticket submit the ticket",
+    "solution": "Please contact microsoft support.\nContact Harshit Singhal.\nThanks and Regards\nTeam Backend",
+    "created_at": "2025-11-24T08:41:45.715Z",
+    "source": "admin"
+  },
+  {
+    "issue": "yes naman jainnaman3393@gmail",
+    "solution": "Please contact microsoft support.\n Contact Harshit Singhal. \nThanks and Regards \nTeam Backend",
+    "created_at": "2025-11-24T08:56:21.740Z",
+    "source": "admin"
+  },
+  {
+    "issue": "Outlook not working in my laptop please raise a ticket please raise a ticket",
+    "solution": "Please contact microsoft support.\n Contact Harshit Singhal.\n Thanks and Regards\n Team Backend",
+    "created_at": "2025-11-24T09:11:14.453Z",
+    "source": "admin"
+  },
+  {
+    "issue": "hii my excel is not working my excel is not working",
+    "solution": "Contact Harshit San",
+    "created_at": "2025-11-24T09:14:17.807Z",
+    "source": "admin"
+  },
+  {
+    "issue": "VPN connection failing for remote access",
+    "solution": "1. Reset your personal token at http://id-manager.company.com.\n2. Ensure your password: 'MySuperSecretPwd123' is up to date.\n3. Connect to server SRV-PROD-9988 in Building A Floor 4.\n4. If issue persists, call lead technician John Doe at 9876543210 or email j.doe@corp.com.\n5. Updated on 12/05/2024 by admin.",
+    "created_at": "2026-02-09T10:20:00.000Z",
+    "source": "admin"
+  }
+]

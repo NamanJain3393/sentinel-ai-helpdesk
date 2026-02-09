@@ -1,0 +1,258 @@
+import { NextResponse } from "next/server";
+import fs from "fs";
+import path from "path";
+import Papa from "papaparse";
+import { embedText, cosineSimilarity } from "@/lib/embeddings";
+import { createIssue, logChatMessage } from "@/lib/db";
+
+import { createChatCompletion, type OpenRouterMessage } from "@/lib/openrouter";
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+/**
+ * Enhanced chatbot API that uses both CSV data and OpenAI
+ */
+export async function POST(req: Request) {
+  try {
+    const { message, conversationHistory = [] } = await req.json();
+
+    if (!message || typeof message !== "string") {
+      return NextResponse.json({ error: "Message is required" }, { status: 400 });
+    }
+
+    // Fetch ticket data directly from CSV
+    let ticketData: any[] = [];
+    try {
+      const filePath = path.join(process.cwd(), "data", "Monthly_Report.csv");
+      const fileContent = fs.readFileSync(filePath, "utf8");
+      const parsed = Papa.parse(fileContent, {
+        header: true,
+        skipEmptyLines: true,
+      });
+      ticketData = parsed.data;
+    } catch (err) {
+      console.warn("Could not load ticket data:", err);
+      // Fallback: try fetching from API
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 
+          (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+        const dataRes = await fetch(`${baseUrl}/api/data`);
+        if (dataRes.ok) {
+          ticketData = await dataRes.json();
+        }
+      } catch (fetchErr) {
+        console.warn("Could not fetch ticket data from API:", fetchErr);
+      }
+    }
+
+    // Clarifying questions (simple heuristic)
+    const lowerMessage = message.toLowerCase();
+    if (/printer/.test(lowerMessage) && !/(hp|canon|epson)/.test(lowerMessage)) {
+      return NextResponse.json({ reply: "Which printer brand or model? (e.g., HP, Canon, Epson)" });
+    }
+    if (/printer/.test(lowerMessage) && /(hp|canon|epson)/.test(lowerMessage) && !/(jam|network|ink|error)/.test(lowerMessage)) {
+      return NextResponse.json({ reply: "What issue are you facing — paper jam, network, ink, or an error message?" });
+    }
+
+    // Semantic search over CSV using embeddings
+    let context = "";
+
+    // Analyze query intent and extract relevant data
+    if (lowerMessage.includes("sla") || lowerMessage.includes("violation")) {
+      const violations = ticketData.filter(
+        (t: any) => t["Resolution SLA - Violation"]?.toLowerCase() === "yes"
+      );
+      const violationRate = ticketData.length > 0 ? (violations.length / ticketData.length) * 100 : 0;
+      const byDept = violations.reduce((acc: any, t: any) => {
+        const dept = t["Department Display name"] || "Unknown";
+        acc[dept] = (acc[dept] || 0) + 1;
+        return acc;
+      }, {});
+
+      context = `SLA Violations Summary:
+- Total violations: ${violations.length} out of ${ticketData.length} tickets (${violationRate.toFixed(1)}%)
+- Top departments with violations: ${Object.entries(byDept)
+        .sort((a: any, b: any) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([dept, count]: any) => `${dept} (${count})`)
+        .join(", ")}
+`;
+    } else if (lowerMessage.includes("resolution") || lowerMessage.includes("time")) {
+      const resolutionTimes = ticketData
+        .map((t: any) => Number(t["Resolution SLA In Minutes"]) || 0)
+        .filter((t) => t > 0);
+      const avgTime =
+        resolutionTimes.length > 0
+          ? resolutionTimes.reduce((a, b) => a + b, 0) / resolutionTimes.length
+          : 0;
+
+      context = `Resolution Time Statistics:
+- Average resolution time: ${avgTime.toFixed(1)} minutes
+- Total tickets analyzed: ${resolutionTimes.length}
+`;
+    } else if (lowerMessage.includes("department")) {
+      const byDept = ticketData.reduce((acc: any, t: any) => {
+        const dept = t["Department Display name"] || "Unknown";
+        acc[dept] = (acc[dept] || 0) + 1;
+        return acc;
+      }, {});
+
+      const topDepts = Object.entries(byDept)
+        .sort((a: any, b: any) => b[1] - a[1])
+        .slice(0, 5);
+
+      context = `Department Statistics:
+${topDepts.map(([dept, count]: any) => `- ${dept}: ${count} tickets`).join("\n")}
+`;
+    } else if (lowerMessage.includes("unresolved") || lowerMessage.includes("pending") || lowerMessage.includes("old")) {
+      const now = new Date();
+      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+      const unresolved = ticketData.filter((t: any) => {
+        const created = t["Created Time"] || t["Updated Time"];
+        if (!created) return false;
+        const ticketDate = new Date(created);
+        return ticketDate < sevenDaysAgo && t["Resolution SLA - Violation"]?.toLowerCase() !== "yes";
+      });
+
+      context = `Unresolved Tickets (older than 7 days):
+- Count: ${unresolved.length}
+- Top departments: ${unresolved
+        .slice(0, 5)
+        .map((t: any) => t["Department Display name"] || "Unknown")
+        .join(", ")}
+`;
+    } else {
+      // Try semantic search with embeddings, fallback to keyword search if quota exceeded
+      try {
+        const corpus: string[] = ticketData.map((t: any) => String(t["Description"] || t["Solution"] || ""));
+        const [queryEmbedding] = await embedText([message]);
+        // Lightweight on-the-fly embeddings for first N rows to limit cost
+        const LIMIT = Math.min(500, corpus.length);
+        const corpusBatch = corpus.slice(0, LIMIT);
+        const corpusEmbeds = await embedText(corpusBatch);
+        const scored = corpusEmbeds.map((e, idx) => ({ idx, score: cosineSimilarity(queryEmbedding, e) }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 3);
+        const matches = scored.map(s => ticketData[s.idx]);
+        if (matches.length > 0) {
+          context = `Relevant past tickets (top ${matches.length}):\n${matches
+            .map(
+              (t: any, i: number) =>
+                `${i + 1}. ${t["Description"] || "No description"}\n   Solution: ${t["Solution"] || "No solution recorded"}`
+            )
+            .join("\n\n")}`;
+        }
+      } catch (embedError: any) {
+        // Fallback to keyword-based search if embeddings fail (quota, rate limit, etc.)
+        console.warn("Embeddings failed, using keyword search:", embedError?.message);
+        const keywords = lowerMessage.split(/\s+/).filter(w => w.length > 2);
+        const similarTickets = ticketData
+          .filter((t: any) => {
+            const desc = (t["Description"] || t["Solution"] || "").toLowerCase();
+            return keywords.some((keyword) => desc.includes(keyword));
+          })
+          .slice(0, 5);
+
+        if (similarTickets.length > 0) {
+          context = `Relevant past tickets (keyword match):\n${similarTickets
+            .map(
+              (t: any, i: number) =>
+                `${i + 1}. ${t["Description"] || "No description"}\n   Solution: ${t["Solution"] || "No solution recorded"}`
+            )
+            .join("\n\n")}`;
+        }
+      }
+    }
+
+    // Build conversation history for context
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      {
+        role: "system",
+        content: `You are a smart IT Helpdesk analytics assistant. You help users understand their support ticket data through natural language queries.
+
+You can answer questions about:
+- SLA violations and compliance rates
+- Resolution times and performance metrics
+- Department-wise ticket distribution
+- Unresolved or pending tickets
+- First Contact Resolution (FCR) rates
+- General ticket trends and insights
+
+Use the provided context from the ticket database to give accurate, data-driven answers. If specific data isn't available, acknowledge that and provide general guidance.
+
+Be conversational, helpful, and concise. Format numbers and percentages clearly.`,
+      },
+    ];
+
+    // Add conversation history (last 6 messages for context)
+    conversationHistory.slice(-6).forEach((msg: { role: string; content: string }) => {
+      if (msg.role === "user" || msg.role === "assistant") {
+        messages.push({
+          role: msg.role as "user" | "assistant",
+          content: msg.content,
+        });
+      }
+    });
+
+    // Add current message with context
+    messages.push({
+      role: "user",
+      content: context ? `${message}\n\nContext from ticket database:\n${context}` : message,
+    });
+
+    // Call OpenAI
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages,
+      temperature: 0.7,
+      max_tokens: 500,
+    });
+
+    const aiResponse = completion.choices[0]?.message?.content || "I couldn't generate a response. Please try again.";
+
+    // Log chat messages to Supabase (best-effort)
+    await Promise.all([
+      logChatMessage({ role: "user", content: message }),
+      logChatMessage({ role: "assistant", content: aiResponse }),
+    ]);
+
+    // If no context and response indicates no solution, log unresolved issue
+    if (!context || /no existing solution/i.test(aiResponse)) {
+      try {
+        await createIssue({
+          company: "N/A",
+          model: "N/A",
+          issue_type: "unresolved",
+          description: message,
+          status: "open",
+          ai_generated: false,
+        });
+      } catch (_) {}
+    }
+
+    return NextResponse.json({
+      reply: aiResponse,
+      context: context ? "Used ticket data for context" : "General response",
+    });
+  } catch (err: any) {
+    console.error("❌ Chat API error:", err);
+    
+    // Handle quota/rate limit errors gracefully
+    if (err?.status === 429 || err?.code === 'insufficient_quota' || err?.message?.includes('quota')) {
+      return NextResponse.json({
+        reply: "I'm currently experiencing high demand. Please try again in a moment, or contact support for assistance with your issue.",
+        error: "OpenAI quota exceeded",
+      }, { status: 503 });
+    }
+    
+    return NextResponse.json(
+      {
+        reply: "I apologize, but I encountered an error processing your request. Please try again later.",
+        error: err?.message || "Unknown error",
+      },
+      { status: 500 }
+    );
+  }
+}
